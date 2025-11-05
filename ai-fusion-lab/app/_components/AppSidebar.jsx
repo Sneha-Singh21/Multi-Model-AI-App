@@ -9,13 +9,16 @@ import {
   SidebarHeader,
 } from "@/components/ui/sidebar";
 import Image from "next/image";
-import { Moon, Sun } from "lucide-react";
+import { LogOut, Moon, Sun, User2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "next-themes";
+import { SignInButton, SignOutButton, useUser } from "@clerk/nextjs";
+import UsageCreditProgress from "./UsageCreditProgress";
 
 const AppSidebar = () => {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const { user } = useUser();
 
   useEffect(() => {
     setMounted(true);
@@ -47,9 +50,12 @@ const AppSidebar = () => {
               )}
             </div>
           </div>
-          <Button className="mt-7 w-full" size="lg">
-            + New Chat
-          </Button>
+
+          {user ? <Button className="mt-7 w-full" size="lg">+ New Chat</Button>
+           : <SignInButton >
+                <Button className="mt-7 w-full" size="lg">+ New Chat</Button>
+           </SignInButton>
+          }
         </div>
       </SidebarHeader>
 
@@ -57,18 +63,36 @@ const AppSidebar = () => {
         <SidebarGroup>
           <div className="p-3">
             <h2 className="font-bold text-lg">Chat</h2>
-            <p className="text-sm text-gray-400">
+            {!user && <p className="text-sm text-gray-400">
               Sign in to start chatting with multiple AI models.
-            </p>
+            </p>}
           </div>
         </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter>
-        <div className="p-3 mb-10">
-          <Button className="w-full" size="lg">
-            Sign In/Sign Up
-          </Button>
+        <div className="p-3">
+          {!user ? <div className="mb-6">
+            <SignInButton mode="modal">
+              <Button className="w-full" size="lg">
+                Sign In/Sign Up
+              </Button>
+            </SignInButton>
+          </div>
+          : 
+          <div>
+            <UsageCreditProgress />
+            <Button className='w-full mb-3'> <Zap/> Upgrade Plan</Button>
+            <div className="flex">
+              <Button className="flex" size="lg" variant={'ghost'}>
+                <User2 /> <h2>Settings</h2>
+              </Button>
+              <SignOutButton>
+                 <Button className="flex text-red-600 hover:text-red-600" size="lg" variant={'ghost'}><LogOut/><h2> Logout</h2></Button>
+              </SignOutButton>
+            </div>
+          </div>
+          }
         </div>
       </SidebarFooter>
     </Sidebar>
