@@ -8,19 +8,69 @@ import { AiSelectedModelContext } from "@/context/AiSelectedModelContext.js";
 import axios from "axios";
 import { useUser } from "@clerk/nextjs";
 import { db } from "@/config/FirebaseConfig";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, getDoc } from "firebase/firestore";
+import { v4 as uuidv4 } from "uuid";
+import { useSearchParams } from "next/navigation.js";
 
 const ChatInputBox = () => {
   const [userInput, setUserInput] = useState("");
   const { aiSelectedModel, messages, setMessages } = useContext(AiSelectedModelContext);
   const { user } = useUser();
 
+  const [chatId, setChatId] = useState(null);
+  const params = useSearchParams();
+
+  // 🆕 Create new chat session ID only once per session
+  useEffect(() => {
+    const chatId_ = params.get("chatId");
+    if (chatId_) {
+      setChatId(chatId_);
+      GetMessages(chatId_);
+    } else {
+      setMessages([]);
+      setChatId(uuidv4());
+    }
+  }, [params]);
+
+  // 🧠 Save all messages to Firestore (chatHistory collection)
+  const saveMessages = async (updatedMessages) => {
+    if (!user?.primaryEmailAddress?.emailAddress || !chatId) return;
+
+    const userEmail = user.primaryEmailAddress.emailAddress;
+    const docRef = doc(db, "chatHistory", chatId);
+
+    await setDoc(
+      docRef,
+      {
+        chatId,
+        userEmail,
+        messages: updatedMessages,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+  };
+
+  // 🧠 Load messages from Firestore (on refresh)
+  useEffect(() => {
+    const loadMessages = async () => {
+      if (!chatId) return;
+      const docRef = doc(db, "chatHistory", chatId);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        setMessages(docSnap.data().messages || {});
+      }
+    };
+    loadMessages();
+  }, [chatId, setMessages]);
+
+  // 💬 Handle send logic
   const handleSend = async () => {
     if (!userInput.trim()) return;
     const currentInput = userInput.trim();
     setUserInput("");
 
-    // 🧠 Get all enabled models (only those with enable=true and modelId)
+    // 🧠 Get enabled models
     const activeModels = Object.entries(aiSelectedModel).filter(
       ([_, info]) => info.enable && info.modelId
     );
@@ -30,16 +80,17 @@ const ChatInputBox = () => {
       return;
     }
 
-    // 1️⃣ Add user message to all enabled models
+    // 1️⃣ Add user message
     setMessages((prev) => {
       const updated = { ...prev };
       activeModels.forEach(([key]) => {
         updated[key] = [...(updated[key] ?? []), { role: "user", content: currentInput }];
       });
+      saveMessages(updated);
       return updated;
     });
 
-    // 2️⃣ Add “Thinking...” placeholder before API call
+    // 2️⃣ Add “Thinking...” placeholders
     setMessages((prev) => {
       const updated = { ...prev };
       activeModels.forEach(([key]) => {
@@ -48,10 +99,11 @@ const ChatInputBox = () => {
           { role: "assistant", content: "loading", model: key, loading: true },
         ];
       });
+      saveMessages(updated);
       return updated;
     });
 
-    // 3️⃣ Run all API calls in parallel
+    // 3️⃣ Call API for each model in parallel
     const results = await Promise.allSettled(
       activeModels.map(async ([parentModel, modelInfo]) => {
         try {
@@ -74,7 +126,7 @@ const ChatInputBox = () => {
       })
     );
 
-    // 4️⃣ Update messages for each model with AI responses
+    // 4️⃣ Update AI responses + persist
     results.forEach((r) => {
       if (!r.value && !r.aiResponse) return;
       const { parentModel, aiResponse } = r.value ?? r;
@@ -101,18 +153,19 @@ const ChatInputBox = () => {
         }
 
         updated[parentModel] = msgs;
-
-        // ✅ Firestore save AFTER React updates (ensures correct data)
-        if (user?.primaryEmailAddress?.emailAddress) {
-          const userEmail = user.primaryEmailAddress.emailAddress;
-          const docRef = doc(db, "users", userEmail);
-          setDoc(docRef, { messages: { [parentModel]: msgs } }, { merge: true });
-        }
-
+        saveMessages(updated); // 🧩 Save messages after each response
         return updated;
       });
     });
   };
+
+  const GetMessages = async () => {
+    const docRef = doc(db, "chatHistory", chatId);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      setMessages(docSnap.data().messages || {});
+    }
+  }
 
   return (
     <div className="flex flex-col h-full relative">
