@@ -22,12 +22,16 @@ const Provider = ({ children, ...props }) => {
   const [messages, setMessages] = useState({});
   const prevModelRef = useRef(DefaultModel);
 
-  // 1️⃣ Create or Fetch User from Firestore
+  // 🔥 Track local updates to stop Firestore overwriting them
+  const lastLocalUpdateRef = useRef(0);
+
+  const [isUpdatingFirestore, setIsUpdatingFirestore] = useState(false);
+
+  // 1️⃣ Create or Fetch User
   useEffect(() => {
     if (user?.primaryEmailAddress?.emailAddress) {
       createOrFetchUser();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const createOrFetchUser = async () => {
@@ -44,50 +48,49 @@ const Provider = ({ children, ...props }) => {
           remainingMsg: 5,
           credits: 1000,
           selectedModelPref: DefaultModel,
-          messages: {},
           createdAt: new Date(),
           updatedAt: new Date(),
         };
 
-        // ✅ Use merge:true to avoid accidental overwrites
         await setDoc(userRef, newUser, { merge: true });
         setUserDetails(newUser);
+
         setAiSelectedModel(DefaultModel);
+
         setAiModelList((prevList) =>
           prevList.map((m) => ({
             ...m,
             enable: !!DefaultModel?.[m.model]?.enable,
           }))
         );
+
+        prevModelRef.current = DefaultModel;
       } else {
         const userInfo = userSnap.data();
-
         setUserDetails(userInfo);
-        setAiSelectedModel({
-          ...DefaultModel,
-          ...(userInfo?.selectedModelPref || {}),
-        });
-        setMessages(userInfo?.messages ?? {});
 
-        // ✅ Ensure UI model list reflects Firestore enable states
+        const remote = userInfo?.selectedModelPref || {};
+
+        // ⭐ Correct merging logic — do NOT override with DefaultModel again
+        const mergedSelected = { ...DefaultModel, ...remote };
+
+        setAiSelectedModel(mergedSelected);
+
         setAiModelList((prevList) =>
           prevList.map((m) => {
-            const saved = userInfo?.selectedModelPref?.[m.model];
+            const saved = remote?.[m.model];
             return saved ? { ...m, enable: !!saved.enable } : m;
           })
         );
 
-        prevModelRef.current = {
-          ...DefaultModel,
-          ...(userInfo?.selectedModelPref || {}),
-        };
+        prevModelRef.current = mergedSelected;
       }
     } catch (error) {
       console.error("❌ Error creating/fetching user:", error);
     }
   };
 
-  // 2️⃣ Real-time Firestore Sync
+  // 2️⃣ Listen to Firestore changes
   useEffect(() => {
     if (!user?.primaryEmailAddress?.emailAddress) return;
 
@@ -97,90 +100,89 @@ const Provider = ({ children, ...props }) => {
     const unsubscribe = onSnapshot(docRef, (snapshot) => {
       if (!snapshot.exists()) return;
 
+      if (isUpdatingFirestore) return;
+
+      // Stop overwrite if local UI update was recent
+      if (Date.now() - lastLocalUpdateRef.current < 700) return;
+
       const data = snapshot.data();
       const newSelected = data?.selectedModelPref ?? {};
-      const newMessages = data?.messages ?? {};
 
-      // ✅ Prevent unnecessary re-renders
+      // ⭐ IMPORTANT FIX:
+      // Create merged state WITHOUT forcing defaults again.
+      const mergedSelected = { ...prevModelRef.current, ...newSelected };
+
       setAiSelectedModel((prev) => {
-        const hasChange =
-          Object.keys(newSelected).some(
-            (key) =>
-              prev[key]?.enable !== newSelected[key]?.enable ||
-              prev[key]?.modelId !== newSelected[key]?.modelId
-          ) ||
-          Object.keys(prev).length !== Object.keys(newSelected).length;
+        const keys = new Set([...Object.keys(prev), ...Object.keys(mergedSelected)]);
+        let changed = false;
 
-        return hasChange ? { ...prev, ...newSelected } : prev;
+        for (const key of keys) {
+          if (
+            prev[key]?.enable !== mergedSelected[key]?.enable ||
+            prev[key]?.modelId !== mergedSelected[key]?.modelId
+          ) {
+            changed = true;
+            break;
+          }
+        }
+        return changed ? mergedSelected : prev;
       });
 
-      // ✅ Keep UI toggle states synced
-      setAiModelList((prevList) => {
-        const firestoreModels = Object.keys(newSelected || {});
-        const mergedList = [
-          ...prevList,
-          ...firestoreModels
-            .filter((fm) => !prevList.find((m) => m.model === fm))
-            .map((fm) => ({
-              model: fm,
-              enable: !!newSelected[fm]?.enable,
-            })),
-        ];
-
-        return mergedList.map((m) => {
-          const saved = newSelected?.[m.model];
+      setAiModelList((prevList) =>
+        prevList.map((m) => {
+          const saved = mergedSelected?.[m.model];
           return saved ? { ...m, enable: !!saved.enable } : m;
-        });
-      });
-
-      // ✅ Merge Firestore messages with local messages (avoid overwriting)
-      setMessages((prev) => ({ ...prev, ...newMessages }));
+        })
+      );
     });
 
     return () => unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [user, isUpdatingFirestore]);
 
-  // 3️⃣ Debounced Firestore Update on Model Change
+  // 3️⃣ Debounced Firestore Update
   useEffect(() => {
     if (!user?.primaryEmailAddress?.emailAddress) return;
 
     const timeout = setTimeout(() => {
       updateChangedModelOnly();
-    }, 500); // Slightly higher debounce for Firestore safety
+    }, 500);
 
     return () => clearTimeout(timeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiSelectedModel]);
 
-  // 4️⃣ Update Only Changed Models (Optimized + Batched)
+  // 4️⃣ Write only changed model fields
   const updateChangedModelOnly = async () => {
     try {
       const userEmail = user?.primaryEmailAddress?.emailAddress;
       if (!userEmail) return;
 
       const docRef = doc(db, "users", userEmail);
+
       const prev = prevModelRef.current;
       const current = aiSelectedModel;
 
       const changedModels = {};
-      for (const modelKey of Object.keys(current)) {
-        const prevModel = prev[modelKey] || {};
-        const currModel = current[modelKey] || {};
 
-        const changed =
-          prevModel.enable !== currModel.enable ||
-          prevModel.modelId !== currModel.modelId;
+      for (const key of Object.keys(current)) {
+        const oldVal = prev[key] || {};
+        const newVal = current[key] || {};
 
-        if (changed) {
-          changedModels[`selectedModelPref.${modelKey}`] = currModel;
+        if (oldVal.enable !== newVal.enable || oldVal.modelId !== newVal.modelId) {
+          changedModels[`selectedModelPref.${key}`] = newVal;
         }
       }
 
       if (Object.keys(changedModels).length > 0) {
-        // ✅ Single batched Firestore write
+        setIsUpdatingFirestore(true);
+
         await setDoc(docRef, changedModels, { merge: true });
+
         prevModelRef.current = { ...current };
+
+        // Mark local action time
+        lastLocalUpdateRef.current = Date.now();
+
+        setTimeout(() => setIsUpdatingFirestore(false), 800);
       }
     } catch (error) {
       console.error("❌ Firestore update error:", error);
