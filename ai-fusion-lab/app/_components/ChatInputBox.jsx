@@ -11,10 +11,13 @@ import { db } from "@/config/FirebaseConfig";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { v4 as uuidv4 } from "uuid";
 import { useSearchParams } from "next/navigation.js";
+import { toast } from "sonner";
 
 const ChatInputBox = () => {
   const [userInput, setUserInput] = useState("");
-  const { aiSelectedModel, messages, setMessages } = useContext(AiSelectedModelContext);
+  const { aiSelectedModel, messages, setMessages } = useContext(
+    AiSelectedModelContext
+  );
   const { user } = useUser();
 
   const [chatId, setChatId] = useState(null);
@@ -69,6 +72,18 @@ const ChatInputBox = () => {
     if (!userInput.trim()) return;
     const currentInput = userInput.trim();
     setUserInput("");
+    
+    // Call this only if the user is a free user
+    // Deduct and check token limit
+    const result = await axios.post('/api/user-remaining-msg', {
+      token: 1
+    });
+
+    const remainingToken = result?.data?.remainingToken;
+    if (remainingToken <= 0) {
+      toast.error("⚠️ You have reached your message limit. Please upgrade your plan.");
+      return;
+    }
 
     // 🧠 Get enabled models
     const activeModels = Object.entries(aiSelectedModel).filter(
@@ -84,7 +99,10 @@ const ChatInputBox = () => {
     setMessages((prev) => {
       const updated = { ...prev };
       activeModels.forEach(([key]) => {
-        updated[key] = [...(updated[key] ?? []), { role: "user", content: currentInput }];
+        updated[key] = [
+          ...(updated[key] ?? []),
+          { role: "user", content: currentInput },
+        ];
       });
       saveMessages(updated);
       return updated;
@@ -159,13 +177,14 @@ const ChatInputBox = () => {
     });
   };
 
-  const GetMessages = async () => {
-    const docRef = doc(db, "chatHistory", chatId);
+  const GetMessages = async (id) => {
+    if (!id) return;
+    const docRef = doc(db, "chatHistory", id);
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) {
       setMessages(docSnap.data().messages || {});
     }
-  }
+  };
 
   return (
     <div className="flex flex-col h-full relative">
@@ -181,7 +200,11 @@ const ChatInputBox = () => {
           flex px-4 py-2 gap-2 transition-colors duration-300"
         >
           <div className="flex items-end pb-1">
-            <Button variant="ghost" size="icon" className="text-gray-600 dark:text-gray-300">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-gray-600 dark:text-gray-300"
+            >
               <Paperclip className="h-5 w-5" />
             </Button>
           </div>
@@ -198,7 +221,8 @@ const ChatInputBox = () => {
               onChange={(e) => {
                 setUserInput(e.target.value);
                 e.target.style.height = "auto";
-                e.target.style.height = Math.min(e.target.scrollHeight, 150) + "px";
+                e.target.style.height =
+                  Math.min(e.target.scrollHeight, 150) + "px";
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -210,7 +234,11 @@ const ChatInputBox = () => {
           </div>
 
           <div className="flex items-end gap-2 pb-1">
-            <Button variant="ghost" size="icon" className="text-gray-600 dark:text-gray-300">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-gray-600 dark:text-gray-300"
+            >
               <Mic className="h-5 w-5" />
             </Button>
             <Button

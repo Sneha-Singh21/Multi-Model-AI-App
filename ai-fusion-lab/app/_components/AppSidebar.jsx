@@ -18,16 +18,26 @@ import { collection, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/config/FirebaseConfig";
 import moment from "moment";
 import Link from "next/link";
+import axios from "axios";
+import { AiSelectedModelContext } from "@/context/AiSelectedModelContext";
 
 const AppSidebar = () => {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const { user } = useUser();
   const [chatHistory, setChatHistory] = useState([]);
+  const [ freeMsgsCount, setFreeMsgsCount ] = useState(0);
+  const { aiSelectedModel, messages, setMessages } = useContext(
+      AiSelectedModelContext
+    );
 
   useEffect(() => {
     user && GetChatHistory();
   }, [user]);
+
+  useEffect(() => {
+    GetRemainingTokenMsgs();
+  }, [messages]);
 
   const GetChatHistory = async () => {
     const q = query(
@@ -57,6 +67,11 @@ const AppSidebar = () => {
       updatedAt: formattedDate,
     };
   };
+
+  const GetRemainingTokenMsgs = async () => {
+    const result = await axios.post('/api/user-remaining-msg');
+    setFreeMsgsCount(result.data.remainingToken);
+  }
 
   useEffect(() => setMounted(true), []);
   if (!mounted) return null;
@@ -156,7 +171,7 @@ const AppSidebar = () => {
             </SignInButton>
           ) : (
             <div className="space-y-3">
-              <UsageCreditProgress />
+              <UsageCreditProgress remainingToken={freeMsgsCount} />
 
               {/* Upgrade Plan Button */}
               <Button className="w-full flex items-center justify-center gap-2 bg-linear-to-r from-purple-600 to-blue-600 text-white hover:shadow-md transition-all">
